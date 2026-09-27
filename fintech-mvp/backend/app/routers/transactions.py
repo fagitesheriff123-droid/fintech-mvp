@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from typing import List
 from .. import models, schemas
 from ..database import get_db
-from ..services.parser import parse_csv
+from ..services.parser import parse_csv, parse_pdf
 from ..deps import get_current_user
 
 router = APIRouter(prefix="/transactions", tags=["transactions"])
@@ -17,15 +17,16 @@ async def upload_statement(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    if not file.filename.lower().endswith(".csv"):
-        raise HTTPException(status_code=400, detail="Only CSV upload is supported in v1")
+    filename = file.filename.lower()
+    if not (filename.endswith(".csv") or filename.endswith(".pdf")):
+        raise HTTPException(status_code=400, detail="Only CSV or PDF statements are supported")
 
     contents = await file.read()
     if len(contents) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="File too large — max 5MB")
 
     try:
-        rows = parse_csv(contents)
+        rows = parse_pdf(contents) if filename.endswith(".pdf") else parse_csv(contents)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

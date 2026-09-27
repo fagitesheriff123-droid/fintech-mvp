@@ -28,12 +28,12 @@ export default function Upload() {
     <div className="max-w-md mx-auto mt-16 bg-white p-8 rounded-xl shadow-sm border">
       <h1 className="text-xl font-semibold mb-2">Upload a statement</h1>
       <p className="text-sm text-gray-500 mb-6">
-        CSV with date, description, amount columns.
+        CSV with date, description, amount columns — or a PDF bank statement.
       </p>
       <form onSubmit={submit} className="space-y-4">
         <input
           type="file"
-          accept=".csv"
+          accept=".csv,.pdf"
           onChange={(e) => setFile(e.target.files[0])}
           className="block w-full text-sm"
         />
