@@ -1,5 +1,5 @@
-from sqlalchemy.exc import IntegrityError
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from .. import models, schemas, auth
 from ..database import get_db
@@ -22,7 +22,14 @@ def signup(user: schemas.UserCreate, db: Session = Depends(get_db)):
         email=user.email, hashed_password=auth.hash_password(user.password)
     )
     db.add(new_user)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # Two signups for the same email landed at once (e.g. a double-click) and
+        # both passed the check above before either committed. Treat it the same
+        # as the normal "already registered" case instead of a 500.
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Email already registered")
     db.refresh(new_user)
     return new_user
 
