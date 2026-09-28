@@ -2,17 +2,9 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts'
 import api, { isLite } from '../api'
+import { Card, naira } from '../ui'
 
 const COLORS = ['#10b981', '#3b82f6', '#f59e0b', '#8b5cf6', '#ef4444', '#14b8a6', '#ec4899', '#64748b']
-const naira = (n) => '₦' + Math.round(n).toLocaleString()
-
-const Card = ({ title, children, className = '' }) => (
-  <section className={`bg-white rounded-2xl border border-slate-200 shadow-sm p-5 ${className}`}>
-    {title && <h2 className="text-sm font-semibold text-slate-700 mb-3">{title}</h2>}
-    {children}
-  </section>
-)
-
 function Ring({ score }) {
   const c = 2 * Math.PI * 42
   const color = score >= 70 ? '#10b981' : score >= 40 ? '#f59e0b' : '#ef4444'
