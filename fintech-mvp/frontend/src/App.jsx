@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { HashRouter, Routes, Route, Navigate, NavLink } from 'react-router-dom'
 import Login from './pages/Login.jsx'
+import ForgotPassword from './pages/ForgotPassword.jsx'
+import ResetPassword from './pages/ResetPassword.jsx'
 import Upload from './pages/Upload.jsx'
 import Dashboard from './pages/Dashboard.jsx'
 import Planning from './pages/Planning.jsx'
@@ -65,6 +67,8 @@ export default function App() {
         )}
         <Routes>
           <Route path="/login" element={<Login onLogin={() => force((n) => n + 1)} />} />
+          <Route path="/forgot-password" element={<ForgotPassword />} />
+          <Route path="/reset-password" element={<ResetPassword />} />
           <Route path="/upload" element={guard(<Upload />)} />
           <Route path="/planning" element={guard(<Planning />)} />
           <Route path="/experimental" element={guard(<Experimental />)} />

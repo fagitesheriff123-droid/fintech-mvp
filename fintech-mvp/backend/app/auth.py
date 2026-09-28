@@ -1,5 +1,7 @@
+import hashlib
 import os
-from datetime import datetime, timedelta
+import secrets
+from datetime import datetime, timedelta, timezone
 from jose import jwt
 from passlib.context import CryptContext
 
@@ -40,3 +42,20 @@ def decode_access_token(token: str) -> dict | None:
         return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
     except Exception:
         return None
+
+
+RESET_TOKEN_EXPIRE_MINUTES = 30
+
+
+def generate_reset_token() -> tuple[str, str, datetime]:
+    """Returns (token to email the user, hash to store in the DB, expiry).
+    Only the hash is stored, so a leaked database doesn't hand out usable
+    reset links (the same reasoning as never storing a plaintext password)."""
+    token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    expires = datetime.now(timezone.utc) + timedelta(minutes=RESET_TOKEN_EXPIRE_MINUTES)
+    return token, token_hash, expires
+
+
+def hash_reset_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()

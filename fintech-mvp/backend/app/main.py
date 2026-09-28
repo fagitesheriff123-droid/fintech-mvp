@@ -2,10 +2,12 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from . import models
 from .database import engine
+from .migrate import add_missing_columns
 import os
 from .routers import auth_router, transactions, analytics, planning, experimental
 
 models.Base.metadata.create_all(bind=engine)
+add_missing_columns(engine, models.Base)  # e.g. reset_token_hash added after the users table already existed
 
 app = FastAPI(title="AI Personal Finance Platform — v1")
 

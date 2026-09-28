@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, Link } from 'react-router-dom'
 import api from '../api'
 
 export default function Login({ onLogin }) {
@@ -46,9 +46,12 @@ export default function Login({ onLogin }) {
             {busy ? 'Please wait…' : mode === 'login' ? 'Log in' : 'Sign up'}
           </button>
         </form>
-        <button className="text-sm text-slate-500 hover:text-slate-800 mt-4" onClick={() => setMode(mode === 'login' ? 'signup' : 'login')}>
-          {mode === 'login' ? 'Need an account? Sign up' : 'Have an account? Log in'}
-        </button>
+        <div className="flex justify-between items-center mt-4">
+          <button className="text-sm text-slate-500 hover:text-slate-800" onClick={() => setMode(mode === 'login' ? 'signup' : 'login')}>
+            {mode === 'login' ? 'Need an account? Sign up' : 'Have an account? Log in'}
+          </button>
+          {mode === 'login' && <Link to="/forgot-password" className="text-sm text-slate-500 hover:text-slate-800">Forgot password?</Link>}
+        </div>
       </div>
     </div>
   )
