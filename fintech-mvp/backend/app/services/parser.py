@@ -7,9 +7,10 @@ forecasting.
 """
 import io
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 import pandas as pd
 import pdfplumber
+import pytesseract
 
 CATEGORY_RULES = {
     "transport": ["uber", "bolt", "taxi", "fuel", "petrol"],
@@ -58,11 +59,12 @@ def parse_csv(file_bytes: bytes) -> list[dict]:
 # from the running balance, (3) plain "date description amount" lines.
 
 _MONEY = re.compile(r"[-+]?\(?[₦$£€]?\s?\d[\d,]*\.\d{2}(?![\d%])\)?")
-_DATE = r"\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\s+[A-Za-z]{3,9}\s+\d{2,4}"
+_DATE = r"\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[\s-][A-Za-z]{3,9}[\s-]\d{2,4}"
 _LINE_DATE = re.compile(rf"^({_DATE})\s+")
 _TXN_HDR = re.compile(r"^date\s+description", re.I)
 _STOP = re.compile(r"^(CHECKS|DAILY BALANCE|INTEREST CHARGE|READY RESERVE|ACCOUNT ACTIVITY|TRAN DATE)")
 _CHECK = re.compile(rf"(\d{{3,6}})\s*\*?\s+({_DATE})\s+([₦$£€]?[\d,]+\.\d{{2}})")
+_PERIOD_RE = re.compile(rf"period:?\s*({_DATE})\s*(?:to|To|TO|-)\s*({_DATE})", re.I)
 _HEADERS = {
     "date": ("date",), "desc": ("description", "narration", "details", "particulars", "remarks"),
     "amount": ("amount", "value"), "debit": ("debit", "withdrawal", "dr"), "credit": ("credit", "deposit", "cr"),
@@ -91,7 +93,8 @@ def _detect_dayfirst(text):
 
 def _parse_date_any(raw, dayfirst=True):
     d, m = ("%d", "%m") if dayfirst else ("%m", "%d")
-    fmts = [f"{d}/{m}/%Y", f"{d}/{m}/%y", f"{d}-{m}-%Y", f"{d}-{m}-%y", "%Y-%m-%d", "%d %b %Y", "%d %B %Y", "%d %b %y"]
+    fmts = [f"{d}/{m}/%Y", f"{d}/{m}/%y", f"{d}-{m}-%Y", f"{d}-{m}-%y", "%Y-%m-%d",
+            "%d %b %Y", "%d %B %Y", "%d %b %y", "%d-%b-%Y", "%d-%B-%Y", "%d-%b-%y"]
     for fmt in fmts:
         try:
             return datetime.strptime(str(raw).strip(), fmt).date()
@@ -144,21 +147,46 @@ def _signed(desc, raw_token, amt):
     return abs(amt) if categorize(desc) == "income" or re.search(r"\b(credit|deposit)", desc.lower()) else -abs(amt)
 
 
+def _statement_bounds(text, dayfirst):
+    """The statement's own declared period ("...for the period: 28-Sep-2025 To
+    28-Sep-2026"), used to catch an implausible OCR digit misread in a
+    transaction date (e.g. a single-digit year flip) that would otherwise
+    silently corrupt that row's date."""
+    m = _PERIOD_RE.search(text)
+    if not m:
+        return None
+    a, b = _parse_date_any(m.group(1), dayfirst), _parse_date_any(m.group(2), dayfirst)
+    return (min(a, b), max(a, b)) if a and b else None
+
+
 def _rows_from_text(text, dayfirst=True):
     lines = [l.strip() for l in text.splitlines() if l.strip()]
     structured = any(_TXN_HDR.match(l) for l in lines)
     mode = None if structured else "txn"
-    rows, pending, prev_bal = [], None, None
+    rows, pending, prev_bal, last_date = [], None, None, None
+    bounds = _statement_bounds(text, dayfirst)
     last, last_i = None, -9  # a wrapped description can trail its row on the next line
 
     def finish(p):
-        nonlocal prev_bal
+        nonlocal prev_bal, last_date
         toks = p["amts"]
         desc = re.sub(r"\s+", " ", " ".join(p["desc"])).strip(" -|,:\t")
         vals = [_clean_amount(t) for t in toks]
         if not desc or not vals:
             return None
-        if len(vals) >= 2:  # [amount, running balance]
+        if len(vals) >= 3:
+            # Debit / Credit / Balance columns (common NG bank layout, and what
+            # OCR'd tables collapse to). The balance delta is trusted over the
+            # OCR'd amount digits whenever the two agree with what a real digit
+            # misread would look like.
+            debit, credit, bal = vals[-3], vals[-2], vals[-1]
+            guess = (credit or 0) - (debit or 0)
+            if prev_bal is not None and abs((bal - prev_bal) - guess) < 0.01:
+                signed = bal - prev_bal
+            else:
+                signed = guess
+            prev_bal = bal
+        elif len(vals) == 2:  # [amount, running balance]
             amount, bal = vals[-2], vals[-1]
             if prev_bal is not None and abs(abs(bal - prev_bal) - abs(amount)) < 0.01:
                 signed = bal - prev_bal
@@ -170,8 +198,17 @@ def _rows_from_text(text, dayfirst=True):
                 prev_bal = vals[0]
                 return None
             signed = _signed(desc, toks[0], vals[0])
+        # OCR occasionally drops a date's leading digit ("0-Oct-2025"), or
+        # misreads a single digit into an implausible date (a year that lands
+        # outside the statement's own declared period); in either case, keep
+        # the transaction — and the balance chain — by reusing the last date
+        # actually parsed rather than dropping or corrupting the row.
         d = _parse_date_any(p["date"], dayfirst)
+        if d and bounds and not (bounds[0] - timedelta(days=3) <= d <= bounds[1] + timedelta(days=3)):
+            d = None
+        d = d or last_date
         if d:
+            last_date = d
             rows.append(_row(d, desc, round(signed, 2)))
             return rows[-1]
         return None
@@ -195,6 +232,11 @@ def _rows_from_text(text, dayfirst=True):
         dm = _LINE_DATE.match(line)
         money = [m.group() for m in _MONEY.finditer(line)]
         text_only = _MONEY.sub("", line[dm.end():] if dm else line).strip(" -|")
+        if not dm and not pending and re.search(r"opening balance|brought forward|\bb/f\b", line.lower()):
+            m = list(_MONEY.finditer(line))
+            if m:
+                prev_bal = _clean_amount(m[-1].group())
+            continue
         if dm:
             pending = {"date": dm.group(1), "desc": [text_only], "amts": money}
             if money:
@@ -212,13 +254,48 @@ def _rows_from_text(text, dayfirst=True):
     return rows
 
 
+OCR_MAX_PAGES = 40  # a scanned page takes several seconds on the server's CPU;
+                     # this caps a single upload at a few minutes of processing
+
+
+def _is_scanned(pdf) -> bool:
+    """True if the PDF has no real text layer at all (i.e. it's a photo/scan of
+    a statement, not an exported digital one) — extract_text/extract_tables
+    return nothing useful on these, so they need OCR instead."""
+    return all(len(p.chars) == 0 for p in pdf.pages)
+
+
+def _ocr_text(pdf) -> str:
+    if len(pdf.pages) > OCR_MAX_PAGES:
+        raise ValueError(
+            f"This scanned PDF has {len(pdf.pages)} pages, over the {OCR_MAX_PAGES}-page limit "
+            "for OCR processing. Please split it into smaller files, or export a CSV instead."
+        )
+    # 200 DPI + psm 6 (assume one uniform block of text) was the fastest setting
+    # in testing that didn't lose transactions to misreads on a real 22-page
+    # statement; higher DPI barely improved accuracy further but cost much more time.
+    return "\n".join(
+        pytesseract.image_to_string(page.to_image(resolution=200).original, config="--psm 6")
+        for page in pdf.pages
+    )
+
+
 def parse_pdf(file_bytes: bytes) -> list[dict]:
-    """Best-effort bank statement PDF parser (see strategies above)."""
+    """Best-effort bank statement PDF parser (see strategies above). Scanned
+    (image-only) PDFs are OCR'd first; this is slow (multiple seconds per page
+    on a constrained server) and only as accurate as the scan quality allows,
+    with digit misreads guarded against via the running-balance reconciliation
+    in _rows_from_text/_rows_from_table rather than trusted at face value."""
     with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-        text = "\n".join(p.extract_text() or "" for p in pdf.pages)
-        dayfirst = _detect_dayfirst(text)
-        rows = [r for p in pdf.pages for t in (p.extract_tables() or []) for r in _rows_from_table(t, dayfirst)]
-    rows = rows or _rows_from_text(text, dayfirst)
+        if _is_scanned(pdf):
+            text = _ocr_text(pdf)
+            dayfirst = _detect_dayfirst(text)
+            rows = _rows_from_text(text, dayfirst)
+        else:
+            text = "\n".join(p.extract_text() or "" for p in pdf.pages)
+            dayfirst = _detect_dayfirst(text)
+            rows = [r for p in pdf.pages for t in (p.extract_tables() or []) for r in _rows_from_table(t, dayfirst)]
+            rows = rows or _rows_from_text(text, dayfirst)
     if not rows:
         raise ValueError(
             "Couldn't find any recognizable transactions in this PDF. "

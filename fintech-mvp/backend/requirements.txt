@@ -14,3 +14,4 @@ redis==5.0.8
 scikit-learn==1.5.2
 numpy==1.26.4
 pdfplumber==0.11.9
+pytesseract==0.3.13

@@ -8,7 +8,9 @@ from ..deps import get_current_user
 
 router = APIRouter(prefix="/transactions", tags=["transactions"])
 
-MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5MB — a CSV statement has no business being bigger
+MAX_CSV_BYTES = 5 * 1024 * 1024   # 5MB — a CSV statement has no business being bigger
+MAX_PDF_BYTES = 30 * 1024 * 1024  # 30MB — a scanned multi-page statement is image-heavy;
+                                   # OCR_MAX_PAGES in the parser is the real complexity limit
 
 
 @router.post("/upload", response_model=List[schemas.TransactionOut])
@@ -18,15 +20,17 @@ async def upload_statement(
     current_user: models.User = Depends(get_current_user),
 ):
     filename = file.filename.lower()
-    if not (filename.endswith(".csv") or filename.endswith(".pdf")):
+    is_pdf = filename.endswith(".pdf")
+    if not (filename.endswith(".csv") or is_pdf):
         raise HTTPException(status_code=400, detail="Only CSV or PDF statements are supported")
 
     contents = await file.read()
-    if len(contents) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail="File too large — max 5MB")
+    limit = MAX_PDF_BYTES if is_pdf else MAX_CSV_BYTES
+    if len(contents) > limit:
+        raise HTTPException(status_code=413, detail=f"File too large — max {limit // (1024*1024)}MB")
 
     try:
-        rows = parse_pdf(contents) if filename.endswith(".pdf") else parse_csv(contents)
+        rows = parse_pdf(contents) if is_pdf else parse_csv(contents)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
